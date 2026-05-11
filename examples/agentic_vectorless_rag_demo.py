@@ -135,6 +135,150 @@ def query_agent(client: PageIndexClient, doc_id: str, prompt: str, verbose: bool
     except RuntimeError:
         return asyncio.run(_run())
 
+import asyncio
+import concurrent.futures
+from typing import Optional
+
+from openai import AsyncAzureOpenAI
+from agents import (
+    Agent,
+    Runner,
+    function_tool,
+    set_default_openai_client,
+    set_default_openai_api,
+    set_tracing_disabled,
+    OpenAIChatCompletionsModel,
+)
+from agents.stream_events import RawResponsesStreamEvent, RunItemStreamEvent
+from openai.types.responses import ResponseTextDeltaEvent, ResponseReasoningSummaryTextDeltaEvent
+
+# Optional: avoid re-configuring globals every call
+_AGENTS_AZURE_CONFIGURED = False
+
+
+def configure_agents_for_azure(azure_client: AsyncAzureOpenAI) -> None:
+    """
+    Configure OpenAI Agents SDK to use Azure OpenAI for model traffic.
+    - Uses Chat Completions API shape (more compatible with Azure deployments).
+    - Disables OpenAI trace export (otherwise tracing may try api.openai.com).
+    """
+    global _AGENTS_AZURE_CONFIGURED
+    if _AGENTS_AZURE_CONFIGURED:
+        return
+
+    set_tracing_disabled(True)
+    set_default_openai_client(azure_client)          # set the client used by the SDK [1](https://ruagholding-my.sharepoint.com/personal/cedric_grieder_beyondgravity_com/Documents/Microsoft%20Copilot%20Chat-Dateien/openai_agents_test.py)
+    set_default_openai_api("chat_completions")       # switch default API shape [1](https://ruagholding-my.sharepoint.com/personal/cedric_grieder_beyondgravity_com/Documents/Microsoft%20Copilot%20Chat-Dateien/openai_agents_test.py)
+    _AGENTS_AZURE_CONFIGURED = True
+
+
+def query_agent_azure(
+    client: PageIndexClient,                      # PageIndexClient
+    doc_id: str,
+    prompt: str,
+    azure_client: AsyncAzureOpenAI,
+    deployment: Optional[str] = None,
+    verbose: bool = False,
+) -> str:
+    """Run a document QA agent using the OpenAI Agents SDK (Azure-backed).
+
+    Streams text output token-by-token and returns the full answer string.
+    Tool calls are always printed; verbose=True also prints arguments and output previews.
+    """
+
+    # 1) Ensure the Agents SDK uses YOUR Azure client + Chat Completions API
+    configure_agents_for_azure(azure_client)
+
+    # 2) Use your PageIndex model/deployment unless overridden
+    deployment = deployment or getattr(client, "retrieve_model", None)
+    if not deployment:
+        raise ValueError("No deployment specified and client.retrieve_model is missing.")
+
+    @function_tool
+    def get_document() -> str:
+        """Get document metadata: status, page count, name, and description."""
+        return client.get_document(doc_id)
+
+    @function_tool
+    def get_document_structure() -> str:
+        """Get the document's full tree structure (without text) to find relevant sections."""
+        return client.get_document_structure(doc_id)
+
+    @function_tool
+    def get_page_content(pages: str) -> str:
+        """
+        Get the text content of specific pages or line numbers.
+        Use tight ranges: e.g. '5-7' for pages 5 to 7, '3,8' for pages 3 and 8, '12' for page 12.
+        For Markdown documents, use line numbers from the structure's line_num field.
+        """
+        return client.get_page_content(doc_id, pages)
+
+    # 3) IMPORTANT: Use a model object tied to the Azure client + deployment
+    agent = Agent(
+        name="PageIndex",
+        instructions=AGENT_SYSTEM_PROMPT,
+        tools=[get_document, get_document_structure, get_page_content],
+        model=OpenAIChatCompletionsModel(
+            model=deployment,
+            openai_client=azure_client,
+        ),
+    )
+
+    async def _run():
+        streamed_run = Runner.run_streamed(agent, prompt)
+
+        current_stream_kind = None
+        async for event in streamed_run.stream_events():
+            # The Agents SDK streams "Responses-format" events, even when using run_streamed() [3](https://openai.github.io/openai-agents-python/streaming/)
+            if isinstance(event, RawResponsesStreamEvent):
+                if isinstance(event.data, ResponseReasoningSummaryTextDeltaEvent):
+                    if current_stream_kind != "reasoning":
+                        if current_stream_kind is not None:
+                            print()
+                        print("\n[reasoning]: ", end="", flush=True)
+                    print(event.data.delta, end="", flush=True)
+                    current_stream_kind = "reasoning"
+
+                elif isinstance(event.data, ResponseTextDeltaEvent):
+                    if current_stream_kind != "text":
+                        if current_stream_kind is not None:
+                            print()
+                        print("\n[text]: ", end="", flush=True)
+                    print(event.data.delta, end="", flush=True)
+                    current_stream_kind = "text"
+
+            elif isinstance(event, RunItemStreamEvent):
+                item = event.item
+                if item.type == "tool_call_item":
+                    if current_stream_kind is not None:
+                        print()
+                    raw = item.raw_item
+                    args = getattr(raw, "arguments", "{}")
+                    args_str = f"({args})" if verbose else ""
+                    print(f"\n[tool call]: {raw.name}{args_str}", flush=True)
+                    current_stream_kind = None
+
+                elif item.type == "tool_call_output_item" and verbose:
+                    if current_stream_kind is not None:
+                        print()
+                    output = str(item.output)
+                    preview = output[:200] + "..." if len(output) > 200 else output
+                    print(f"\n[tool call output]: {preview}", flush=True)
+                    current_stream_kind = None
+
+        if current_stream_kind is not None:
+            print()
+
+        return "" if not streamed_run.final_output else str(streamed_run.final_output)
+
+    # 4) Keep your “works in notebooks + scripts” event-loop handling
+    try:
+        asyncio.get_running_loop()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, _run()).result()
+    except RuntimeError:
+        return asyncio.run(_run())
+
 
 if __name__ == "__main__":
 
