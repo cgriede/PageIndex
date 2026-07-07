@@ -5,7 +5,7 @@ import asyncio
 import concurrent.futures
 from pathlib import Path
 
-import PyPDF2
+import pypdf
 
 from .page_index import page_index
 from .page_index_md import md_to_tree
@@ -79,7 +79,7 @@ class PageIndexClient:
             # Extract per-page text so queries don't need the original PDF
             pages = []
             with open(file_path, 'rb') as f:
-                pdf_reader = PyPDF2.PdfReader(f)
+                pdf_reader = pypdf.PdfReader(f)
                 for i, page in enumerate(pdf_reader.pages, 1):
                     pages.append({'page': i, 'content': page.extract_text() or ''})
 

@@ -1,5 +1,5 @@
 import json
-import PyPDF2
+import pypdf
 
 try:
     from .utils import get_number_of_pages, remove_fields
@@ -44,7 +44,7 @@ def _get_pdf_page_content(doc_info: dict, page_nums: list[int]) -> list[dict]:
         ]
     path = doc_info['path']
     with open(path, 'rb') as f:
-        pdf_reader = PyPDF2.PdfReader(f)
+        pdf_reader = pypdf.PdfReader(f)
         total = len(pdf_reader.pages)
         valid_pages = [p for p in page_nums if 1 <= p <= total]
         return [
