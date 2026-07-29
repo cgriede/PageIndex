@@ -137,7 +137,6 @@ def query_agent(client: PageIndexClient, doc_id: str, prompt: str, verbose: bool
 
 import asyncio
 import concurrent.futures
-from typing import Optional
 
 from openai import AsyncAzureOpenAI
 from agents import (
@@ -177,7 +176,7 @@ def query_agent_azure(
     doc_id: str,
     prompt: str,
     azure_client: AsyncAzureOpenAI,
-    deployment: Optional[str] = None,
+    deployment: str | None = None,
     verbose: bool = False,
 ) -> str:
     """Run a document QA agent using the OpenAI Agents SDK (Azure-backed).
