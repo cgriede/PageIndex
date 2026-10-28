@@ -435,10 +435,14 @@ def post_processing(structure, end_physical_index):
     for i, item in enumerate(structure):
         item['start_index'] = item.get('physical_index')
         if i < len(structure) - 1:
-            if structure[i + 1].get('appear_start') == 'yes':
-                item['end_index'] = structure[i + 1]['physical_index']-1
+            next_start_index = structure[i + 1]['physical_index']
+            if (
+                structure[i + 1].get('appear_start') == 'yes'
+                and next_start_index > item['start_index']
+            ):
+                item['end_index'] = next_start_index - 1
             else:
-                item['end_index'] = structure[i + 1]['physical_index']
+                item['end_index'] = next_start_index
         else:
             item['end_index'] = end_physical_index
     tree = list_to_tree(structure)
